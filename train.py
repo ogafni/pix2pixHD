@@ -55,7 +55,10 @@ for epoch in range(start_epoch, opt.niter + opt.niter_decay + 1):
 
         # whether to collect output images
         save_fake = total_steps % opt.display_freq == display_delta
-
+        # print('data[label]: ', np.shape(data['label']))
+        # print('data[inst]: ', np.shape(data['inst']))
+        # print('data[image]: ', np.shape(data['image']))
+        # print('data[feat]: ', np.shape(data['feat']))
         ############## Forward Pass ######################
         losses, generated = model(Variable(data['label']), Variable(data['inst']), 
             Variable(data['image']), Variable(data['feat']), infer=save_fake)

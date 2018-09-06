@@ -60,6 +60,13 @@ class BaseOptions():
         self.parser.add_argument('--nef', type=int, default=16, help='# of encoder filters in the first conv layer')        
         self.parser.add_argument('--n_clusters', type=int, default=10, help='number of clusters for features')        
 
+        # Independent
+        self.parser.add_argument('--predict', action='store_true', help='Use model for prediction')
+        self.parser.add_argument('--pred_n_vec', type=int, default=20, help='Number of dimensions for the prediction vector')
+        self.parser.add_argument('--pred_min_layer', type=int, default=1, help='First residual layer to start from (0 is first)')
+        self.parser.add_argument('--pred_num_layer', type=int, default=7, help='number of residual layers to concat to - R_tot=9')
+        self.parser.add_argument('--pca_model_path', type=str, default=None)
+
         self.initialized = True
 
     def parse(self, save=True):

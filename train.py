@@ -31,9 +31,28 @@ if opt.debug:
     opt.max_dataset_size = 10
 
 data_loader = CreateDataLoader(opt)
-dataset = data_loader.load_data()
-dataset_size = len(data_loader)
+dataset = data_loader.load_data()  # using --serial_batches so to not shuffle
+dataset_size = len(data_loader) - 1  # -1 since the last one will not be used
 print('#training images = %d' % dataset_size)
+
+# if opt.predict:
+#     import pickle
+#     if opt.pca_model_path is None:
+#         print('No PCA model path given. PCAing...')
+#         from sklearn.decomposition import PCA, IncrementalPCA
+#
+#         # for i, data in enumerate(dataset, start=0):
+#         ipca = IncrementalPCA(n_components=20, batch_size=opt.batchSize)
+#         pca_model = ipca.fit(dataset)
+#
+#         # pca = PCA(n_components=opt.pred_n_vec)
+#         print('DATASET: ', len(dataset))
+#         # pca_model = pca.fit(dataset['label'])
+#         pickle.dumps(pca_model, './pca_pkl_model.pkl')
+#         print('PCA model saved to: ./pca_pkl_model.pkl')
+#     else:
+#         pca_model = pickle.loads(opt.pca_model_path)
+#         print('PCA model loaded from: ', opt.pca_model_path)
 
 model = create_model(opt)
 visualizer = Visualizer(opt)
@@ -60,9 +79,14 @@ for epoch in range(start_epoch, opt.niter + opt.niter_decay + 1):
         # print('data[image]: ', np.shape(data['image']))
         # print('data[feat]: ', np.shape(data['feat']))
         ############## Forward Pass ######################
-        losses, generated = model(Variable(data['label']), Variable(data['inst']), 
-            Variable(data['image']), Variable(data['feat']), infer=save_fake)
+        data_a_in = data['label']
+        data_b_in = data['image']
+        # data_b_pca = util.get_pca_vec(data_b_in, pca_model)
 
+        # losses, generated = model(Variable(data_a), Variable(data['inst']),
+        #     Variable(data_b), Variable(data['feat']), infer=save_fake)
+        losses, generated = model(Variable(data_a_in), data['inst'], Variable(data_b_in), Variable(data['feat']),
+                                  infer=save_fake)
         # sum per device losses
         losses = [ torch.mean(x) if not isinstance(x, int) else x for x in losses ]
         loss_dict = dict(zip(model.module.loss_names, losses))

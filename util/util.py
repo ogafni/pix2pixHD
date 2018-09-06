@@ -5,6 +5,7 @@ from PIL import Image
 import numpy as np
 import os
 
+
 # Converts a Tensor into a Numpy array
 # |imtype|: the desired type of the converted numpy array
 def tensor2im(image_tensor, imtype=np.uint8, normalize=True):
@@ -98,3 +99,12 @@ class Colorize(object):
             color_image[2][mask] = self.cmap[label][2]
 
         return color_image
+
+################# Independent ##############
+
+def get_pca_vec(data_in, pca_model):
+    pca_vec = pca_model.transform(data_in)
+    print('data_in shape: ', np.shape(data_in))
+    print('pca_vec shape: ', np.shape(pca_vec))
+    print('PCA explained variance ratio: ', pca_model.explained_variance_ratio_)
+    return pca_vec

@@ -26,17 +26,25 @@ class Pix2PixHDModel(BaseModel):
         self.use_features = opt.instance_feat or opt.label_feat
         self.gen_features = self.use_features and not self.opt.load_features
         input_nc = opt.label_nc if opt.label_nc != 0 else opt.input_nc
+        self.predict = opt.predict
+        self.pred_n_vec = opt.pred_n_vec
+        self.pred_min_layer = opt.pred_min_layer
+        self.pred_num_layer = opt.pred_num_layer
 
         ##### define networks        
         # Generator network
         netG_input_nc = input_nc        
         if not opt.no_instance:
             netG_input_nc += 1
+        if self.predict:
+            n_pred_layers = self.pred_num_layer - self.pred_min_layer + 1
+        else:
+            n_pred_layers = None
         if self.use_features:
             netG_input_nc += opt.feat_num                  
-        self.netG = networks.define_G(netG_input_nc, opt.output_nc, opt.ngf, opt.netG, 
-                                      opt.n_downsample_global, opt.n_blocks_global, opt.n_local_enhancers, 
-                                      opt.n_blocks_local, opt.norm, gpu_ids=self.gpu_ids)        
+        self.netG = networks.define_G(netG_input_nc, opt.output_nc, opt.ngf, opt.netG, opt.n_downsample_global,
+                                      opt.n_blocks_global, opt.n_local_enhancers, opt.n_blocks_local, opt.norm,
+                                      self.pred_n_vec, n_pred_layers, gpu_ids=self.gpu_ids)
 
         # Discriminator network
         if self.isTrain:
@@ -49,8 +57,8 @@ class Pix2PixHDModel(BaseModel):
 
         ### Encoder network
         if self.gen_features:          
-            self.netE = networks.define_G(opt.output_nc, opt.feat_num, opt.nef, 'encoder', 
-                                          opt.n_downsample_E, norm=opt.norm, gpu_ids=self.gpu_ids)  
+            self.netE = networks.define_G(opt.output_nc, opt.feat_num, opt.nef, 'encoder', opt.n_downsample_E,
+                                          norm=opt.norm, pred_n_vec=None, n_pred_layers=None, gpu_ids=self.gpu_ids)
         if self.opt.verbose:
                 print('---------- Networks initialized -------------')
 
@@ -110,7 +118,7 @@ class Pix2PixHDModel(BaseModel):
             params = list(self.netD.parameters())    
             self.optimizer_D = torch.optim.Adam(params, lr=opt.lr, betas=(opt.beta1, 0.999))
 
-    def encode_input(self, label_map, inst_map=None, real_image=None, feat_map=None, infer=False):             
+    def encode_input(self, label_map, inst_map=None, real_image=None, feat_map=None, infer=False):
         if self.opt.label_nc == 0:
             input_label = label_map.data.cuda()
         else:
@@ -121,6 +129,8 @@ class Pix2PixHDModel(BaseModel):
             input_label = input_label.scatter_(1, label_map.data.long().cuda(), 1.0)
             if self.opt.data_type == 16:
                 input_label = input_label.half()
+        # if self.predict:
+        #     b_pca = Variable(b_pca.data.cuda())
 
         # get edges from instance map
         if not self.opt.no_instance:
@@ -151,7 +161,7 @@ class Pix2PixHDModel(BaseModel):
 
     def forward(self, label, inst, image, feat, infer=False):
         # Encode Inputs
-        input_label, inst_map, real_image, feat_map = self.encode_input(label, inst, image, feat)  
+        input_label, inst_map, real_image, feat_map = self.encode_input(label, inst, image, feat)
 
         # Fake Generation
         if self.use_features:
@@ -160,7 +170,9 @@ class Pix2PixHDModel(BaseModel):
             input_concat = torch.cat((input_label, feat_map), dim=1)                        
         else:
             input_concat = input_label
-        fake_image = self.netG.forward(input_concat)
+        # fake_image = self.netG.forward(input_concat)
+        fake_image = self.netG.forward(input_label, real_image)
+
 
         # Fake Detection and Loss
         pred_fake_pool = self.discriminate(input_label, fake_image, use_pool=True)

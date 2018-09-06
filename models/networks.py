@@ -27,13 +27,14 @@ def get_norm_layer(norm_type='instance'):
     return norm_layer
 
 def define_G(input_nc, output_nc, ngf, netG, n_downsample_global=3, n_blocks_global=9, n_local_enhancers=1, 
-             n_blocks_local=3, norm='instance', gpu_ids=[]):    
+             n_blocks_local=3, norm='instance', pred_n_vec=None, n_pred_layers=None, gpu_ids=[]):
     norm_layer = get_norm_layer(norm_type=norm)     
     if netG == 'global':    
-        netG = GlobalGenerator(input_nc, output_nc, ngf, n_downsample_global, n_blocks_global, norm_layer)       
+        netG = GlobalGenerator(input_nc, output_nc, ngf, n_downsample_global, n_blocks_global, norm_layer, pred_n_vec,
+                               n_pred_layers)
     elif netG == 'local':        
         netG = LocalEnhancer(input_nc, output_nc, ngf, n_downsample_global, n_blocks_global, 
-                                  n_local_enhancers, n_blocks_local, norm_layer)
+                                  n_local_enhancers, n_blocks_local, norm_layer, pred_n_vec, n_pred_layers)
     elif netG == 'encoder':
         netG = Encoder(input_nc, output_nc, ngf, n_downsample_global, norm_layer)
     else:
@@ -130,13 +131,15 @@ class VGGLoss(nn.Module):
 ##############################################################################
 class LocalEnhancer(nn.Module):
     def __init__(self, input_nc, output_nc, ngf=32, n_downsample_global=3, n_blocks_global=9, 
-                 n_local_enhancers=1, n_blocks_local=3, norm_layer=nn.BatchNorm2d, padding_type='reflect'):        
+                 n_local_enhancers=1, n_blocks_local=3, norm_layer=nn.BatchNorm2d, padding_type='reflect',
+                 pred_n_vec=None, n_pred_layers=None):
         super(LocalEnhancer, self).__init__()
         self.n_local_enhancers = n_local_enhancers
         
         ###### global generator model #####           
         ngf_global = ngf * (2**n_local_enhancers)
-        model_global = GlobalGenerator(input_nc, output_nc, ngf_global, n_downsample_global, n_blocks_global, norm_layer).model        
+        model_global = GlobalGenerator(input_nc, output_nc, ngf_global, n_downsample_global, n_blocks_global,
+                                       norm_layer, pred_n_vec, n_pred_layers).model
         model_global = [model_global[i] for i in range(len(model_global)-3)] # get rid of final convolution layers        
         self.model = nn.Sequential(*model_global)                
 
@@ -182,36 +185,111 @@ class LocalEnhancer(nn.Module):
             output_prev = model_upsample(model_downsample(input_i) + output_prev)
         return output_prev
 
-class GlobalGenerator(nn.Module):
-    def __init__(self, input_nc, output_nc, ngf=64, n_downsampling=3, n_blocks=9, norm_layer=nn.BatchNorm2d, 
-                 padding_type='reflect'):
-        assert(n_blocks >= 0)
-        super(GlobalGenerator, self).__init__()        
-        activation = nn.ReLU(True)        
 
-        model = [nn.ReflectionPad2d(3), nn.Conv2d(input_nc, ngf, kernel_size=7, padding=0), norm_layer(ngf), activation]
+class GlobalGenerator(nn.Module):
+    def __init__(self, input_nc, output_nc, ngf=64, n_downsampling=3, n_blocks=9, norm_layer=nn.BatchNorm2d,
+                 pred_n_vec=None, n_pred_layers=None, padding_type='reflect'):
+        assert(n_blocks >= 0)
+        super(GlobalGenerator, self).__init__()
+        activation = nn.ReLU(True)
+        self.ngf = ngf
+        w_h = 32
+
+        self.embedder = Embedder(input_nc, ngf, n_downsampling, norm_layer, pred_n_vec, activation, w_h)
+
+        # embed_model_conv = [nn.ReflectionPad2d(3), nn.Conv2d(input_nc, ngf, kernel_size=7, padding=0), norm_layer(ngf), activation]
+        # for i in range(n_downsampling):
+        #     mult = 2**i
+        #     embed_model_conv += [nn.Conv2d(ngf * mult, ngf * mult * 2, kernel_size=3, stride=2, padding=1),
+        #                     norm_layer(ngf * mult * 2), activation]
+        #
+        # self.embed_model_conv = nn.Sequential(*embed_model_conv)
+        #
+        # embed_model_fc = [nn.Linear(self.w_h * self.w_h * ngf * mult * 2, pred_n_vec)]
+        # embed_model_fc += [nn.Linear(pred_n_vec), self.w_h * self.w_h * ngf * 6]
+        # self.embed_model_fc = nn.Sequential(*embed_model_fc)
+
+        seq_model_1 = [nn.ReflectionPad2d(3), nn.Conv2d(input_nc, ngf, kernel_size=7, padding=0), norm_layer(ngf), activation]
         ### downsample
         for i in range(n_downsampling):
             mult = 2**i
-            model += [nn.Conv2d(ngf * mult, ngf * mult * 2, kernel_size=3, stride=2, padding=1),
+            seq_model_1 += [nn.Conv2d(ngf * mult, ngf * mult * 2, kernel_size=3, stride=2, padding=1),
                       norm_layer(ngf * mult * 2), activation]
 
-        ### resnet blocks
+        ### resnet + prediction blocks
         mult = 2**n_downsampling
-        for i in range(n_blocks):
-            model += [ResnetBlock(ngf * mult, padding_type=padding_type, activation=activation, norm_layer=norm_layer)]
-        
-        ### upsample         
+        n_min_pred_layers = (n_blocks - n_pred_layers) // 2  # (9-7) // 2 = 1
+        n_max_pred_layers = n_min_pred_layers + n_pred_layers  # 1 + 7 = 8
+
+
+        for i in range(n_min_pred_layers): #
+            seq_model_1 += [ResnetBlock(ngf * mult, padding_type=padding_type, activation=activation, norm_layer=norm_layer)]
+        self.seq_model_1 = nn.Sequential(*seq_model_1)
+
+        # seq_model_2 = []
+        # for i in range(n_min_pred_layers, n_max_pred_layers):
+        #     seq_model_2 += [ResnetPredictBlock(ngf * mult, pred_n_vec, n_pred_layers, padding_type=padding_type,
+        #                                      activation=activation, norm_layer=norm_layer)]
+        # self.seq_model_2 = nn.Sequential(*seq_model_2)
+
+        self.seq_model_2 = nn.ModuleList()
+        for i in range(n_min_pred_layers, n_max_pred_layers):
+            self.seq_model_2 += [ResnetPredictBlock(ngf * mult, pred_n_vec, n_pred_layers, padding_type=padding_type,
+                                             activation=activation, norm_layer=norm_layer)]
+
+        seq_model_3 = []
+        for i in range(n_max_pred_layers, n_blocks):
+            seq_model_3 += [ResnetBlock(ngf * mult, padding_type=padding_type, activation=activation, norm_layer=norm_layer)]
+
+        ### upsample
         for i in range(n_downsampling):
             mult = 2**(n_downsampling - i)
-            model += [nn.ConvTranspose2d(ngf * mult, int(ngf * mult / 2), kernel_size=3, stride=2, padding=1, output_padding=1),
+            seq_model_3 += [nn.ConvTranspose2d(ngf * mult, int(ngf * mult / 2), kernel_size=3, stride=2, padding=1, output_padding=1),
                        norm_layer(int(ngf * mult / 2)), activation]
-        model += [nn.ReflectionPad2d(3), nn.Conv2d(ngf, output_nc, kernel_size=7, padding=0), nn.Tanh()]        
-        self.model = nn.Sequential(*model)
-            
-    def forward(self, input):
-        return self.model(input)             
+        seq_model_3 += [nn.ReflectionPad2d(3), nn.Conv2d(ngf, output_nc, kernel_size=7, padding=0), nn.Tanh()]
+        self.seq_model_3 = nn.Sequential(*seq_model_3)
+
+
+    def forward(self, input, real_image):
+        # embedding_model = self.embed_model_conv(real_image)
+        # embedding_model = embedding_model.view(embedding_model .size(0), -1)
+        # embedding_model = self.embed_model_fc(embedding_model)
+        # embedding_model = embedding_model.view(embedding_model.size(0), self.w_h, self.w_h, self.ngf * 6)
+        # embedding_model = self.embed_model(embedding_model)
+        cond = self.embedder(real_image)
+        x = self.seq_model_1(input)
+        for residual_block in self.seq_model_2:
+            x = residual_block(x, cond)
+        x = self.seq_model_3(x)
+
+        return x
         
+class Embedder(nn.Module):
+    def __init__(self, input_nc, ngf, n_downsampling, norm_layer, pred_n_vec, activation, w_h):
+        super().__init__()
+        self.ngf = ngf
+        self.w_h = w_h
+        embed_model_conv = [nn.ReflectionPad2d(3), nn.Conv2d(input_nc, ngf, kernel_size=7, padding=0), norm_layer(ngf), activation]
+        for i in range(n_downsampling):
+            mult = 2 ** i
+            embed_model_conv += [nn.Conv2d(ngf * mult, ngf * mult * 2, kernel_size=3, stride=2, padding=1),
+                                 norm_layer(ngf * mult * 2), activation]
+
+        self.embed_model_conv = nn.Sequential(*embed_model_conv)
+
+        embed_model_fc = [nn.Linear(self.w_h * self.w_h * ngf * mult * 2, pred_n_vec)]
+        embed_model_fc += [nn.Linear(pred_n_vec, self.w_h * self.w_h * ngf * 8 * 2)]
+        self.embed_model_fc = nn.Sequential(*embed_model_fc)
+
+    def forward(self, x):
+        x = self.embed_model_conv(x)
+        bsz, csz, wsz, hsz = x.shape
+        x = x.view(bsz, -1)
+        x = self.embed_model_fc(x)
+        x = x.view(bsz, 2*8*self.ngf, wsz, hsz)  # TODO: check if w,h are correct
+        return x
+
+
 # Define a resnet block
 class ResnetBlock(nn.Module):
     def __init__(self, dim, padding_type, norm_layer, activation=nn.ReLU(True), use_dropout=False):
@@ -252,6 +330,61 @@ class ResnetBlock(nn.Module):
 
     def forward(self, x):
         out = x + self.conv_block(x)
+        return out
+
+# Define a resnet block
+class ResnetPredictBlock(nn.Module):
+    def __init__(self, dim, pred_n_vec, n_pred_layers, padding_type, norm_layer, activation=nn.ReLU(True), use_dropout=False):
+        super(ResnetPredictBlock, self).__init__()
+        self.conv_block_a = self.build_conv_block_a(dim, padding_type)
+        # self.pred_block = self.build_pred_block(dim, pred_n_vec, n_pred_layers)
+        self.conv_block_b = self.build_conv_block_b(dim, padding_type, norm_layer, activation, use_dropout)
+
+    def build_conv_block_a(self, dim, padding_type):
+        conv_block_a = []
+
+        p = 0
+        if padding_type == 'reflect':
+            conv_block_a += [nn.ReflectionPad2d(1)]
+        elif padding_type == 'replicate':
+            conv_block_a += [nn.ReplicationPad2d(1)]
+        elif padding_type == 'zero':
+            p = 1
+        else:
+            raise NotImplementedError('padding [%s] is not implemented' % padding_type)
+
+        conv_block_a += [nn.Conv2d(dim, dim, kernel_size=3, padding=p)]
+        return nn.Sequential(*conv_block_a)
+
+    # def build_pred_block(self, dim, pred_n_vec, n_pred_layers):
+    #     ### Prediction block
+    #     # projection_matrix_dim = (pred_n_vec, n_pred_layers, model.size()[1], model.size()[1], ngf * mult)
+    #     # A = torch.randn(projection_matrix_dim, dtype=torch.double)
+    #     # Av = torch.bmm(, Y.unsqueeze(0).expand(X.size(0), *Y.size()))
+    #     pca_block = [nn.Linear(pred_n_vec, (n_pred_layers, 64, 64, dim))]
+    #     return nn.Sequential(*pca_block)
+
+    def build_conv_block_b(self, dim, padding_type, norm_layer, activation, use_dropout):
+        conv_block_b = []
+        conv_block_b += [norm_layer(dim), activation]
+        if use_dropout:
+            conv_block_b += [nn.Dropout(0.5)]
+        p = 0
+        if padding_type == 'reflect':
+            conv_block_b += [nn.ReflectionPad2d(1)]
+        elif padding_type == 'replicate':
+            conv_block_b += [nn.ReplicationPad2d(1)]
+        elif padding_type == 'zero':
+            p = 1
+        else:
+            raise NotImplementedError('padding [%s] is not implemented' % padding_type)
+        conv_block_b += [nn.Conv2d(dim, dim, kernel_size=3, padding=p),
+                       norm_layer(dim)]
+
+        return nn.Sequential(*conv_block_b)
+    def forward(self, t_0, t_1):
+        out = self.conv_block_a(t_0) + t_1
+        out = out + self.conv_block_b(out)
         return out
 
 class Encoder(nn.Module):
